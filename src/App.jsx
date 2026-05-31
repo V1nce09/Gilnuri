@@ -1946,7 +1946,8 @@ function ReportLocationPicker({ school, origin, analysisRadius, selectedPin, set
           opacity: 0.7,
           fillColor: "#38bdf8",
           fillOpacity: 0.08,
-        }).bindPopup(`분석 반경 ${analysisRadius}m`);
+          interactive: false,
+        });
         radius.addTo(map);
         layersRef.current.push(radius);
 
