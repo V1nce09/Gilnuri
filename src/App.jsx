@@ -61,10 +61,21 @@ const SETTINGS_STORAGE_KEY = "safe-commute-ai-settings-v1";
 const REPORTS_STORAGE_KEY = "safe-commute-ai-reports-v1";
 const ORIGINS_STORAGE_KEY = "safe-commute-ai-origins-v1";
 
+function isValidOriginPoint(point) {
+  const lat = Number(point?.lat);
+  const lon = Number(point?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  if (!lat || !lon) return false;
+  // 길누리는 국내 학교·통학권 분석 서비스이므로 잘못 저장된 0,0 또는 해외 좌표는 출발지로 쓰지 않는다.
+  return lat >= 33 && lat <= 39 && lon >= 124 && lon <= 132;
+}
+
 function readSavedSettings() {
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (parsed.origin && !isValidOriginPoint(parsed.origin)) delete parsed.origin;
+    return parsed;
   } catch (error) {
     return {};
   }
@@ -96,7 +107,7 @@ function readSavedOrigins() {
   try {
     const raw = window.localStorage.getItem(ORIGINS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter((item) => Number.isFinite(Number(item.lat)) && Number.isFinite(Number(item.lon))).slice(0, 8) : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => isValidOriginPoint(item)).slice(0, 8) : [];
   } catch (error) {
     return [];
   }
@@ -109,7 +120,7 @@ function writeSavedOrigins(origins) {
 }
 
 function upsertSavedOrigin(origins, origin) {
-  if (!origin || !Number.isFinite(Number(origin.lat)) || !Number.isFinite(Number(origin.lon))) return origins || [];
+  if (!isValidOriginPoint(origin)) return origins || [];
   const normalized = {
     label: origin.label || "저장된 출발지",
     lat: Number(origin.lat),
@@ -134,7 +145,7 @@ function readUrlSettings() {
     if (params.get("route")) next.routeId = params.get("route");
     if (params.get("user")) next.userType = params.get("user");
     if (params.get("radius")) next.analysisRadius = Number(params.get("radius"));
-    if (Number.isFinite(originLat) && Number.isFinite(originLon)) {
+    if (isValidOriginPoint({ lat: originLat, lon: originLon })) {
       next.origin = {
         label: params.get("originLabel") || "공유 링크 출발지",
         lat: originLat,
@@ -155,7 +166,7 @@ function buildShareUrl({ officeCode, schoolId, routeId, userType, analysisRadius
   if (routeId) params.set("route", routeId);
   if (userType) params.set("user", userType);
   if (analysisRadius) params.set("radius", String(analysisRadius));
-  if (origin?.lat && origin?.lon) {
+  if (isValidOriginPoint(origin)) {
     params.set("originLat", String(origin.lat));
     params.set("originLon", String(origin.lon));
     params.set("originLabel", origin.label || "출발지");
@@ -770,6 +781,7 @@ function distanceKm(a, b) {
 }
 
 function routeMetrics(origin, school, route) {
+  if (!isValidOriginPoint(origin)) return null;
   const straight = distanceKm(origin, school);
   if (!straight) return null;
   const routeKm = straight * route.distanceFactor;
@@ -894,7 +906,7 @@ function useAdminAuth() {
 }
 
 function StatCard({ icon, title, value, helper, color = "#0284c7", imageSrc, imageAlt }) {
-  return <Card style={imageSrc ? { minHeight: 250, overflow: "hidden" } : undefined}><div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}><div style={{ minWidth: 0, flex: 1 }}><div style={{ color: "#64748b", fontSize: 14, fontWeight: 800 }}>{title}</div><div style={{ marginTop: 8, fontSize: 32, fontWeight: 950, lineHeight: 1.08, whiteSpace: "nowrap", wordBreak: "keep-all" }}>{value}</div><div style={{ marginTop: 8, color: "#64748b", fontSize: 13, lineHeight: 1.5, wordBreak: "keep-all" }}>{helper}</div></div><div style={{ width: 58, minWidth: 58, display: "grid", placeItems: "center" }}><div style={{ width: 58, height: 58, borderRadius: 22, background: `${color}18`, display: "grid", placeItems: "center", fontSize: 27 }}>{icon}</div></div></div>{imageSrc ? <div style={{ marginTop: 8, height: 138, display: "grid", placeItems: "center", overflow: "visible" }}><img src={imageSrc} alt={imageAlt || title} style={{ width: 230, maxWidth: "130%", height: 170, objectFit: "contain", display: "block", transform: "scale(1.18)", transformOrigin: "center", filter: "drop-shadow(0 18px 24px rgba(15,23,42,0.16))" }} /></div> : null}</Card>;
+  return <Card className="stat-card" style={imageSrc ? { minHeight: 250, overflow: "hidden" } : undefined}><div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}><div style={{ minWidth: 0, flex: 1 }}><div style={{ color: "#64748b", fontSize: 14, fontWeight: 800 }}>{title}</div><div className="stat-value" style={{ marginTop: 8, fontSize: 32, fontWeight: 950, lineHeight: 1.08, whiteSpace: "nowrap", wordBreak: "keep-all" }}>{value}</div><div style={{ marginTop: 8, color: "#64748b", fontSize: 13, lineHeight: 1.5, wordBreak: "keep-all" }}>{helper}</div></div><div style={{ width: 58, minWidth: 58, display: "grid", placeItems: "center" }}><div style={{ width: 58, height: 58, borderRadius: 22, background: `${color}18`, display: "grid", placeItems: "center", fontSize: 27 }}>{icon}</div></div></div>{imageSrc ? <div style={{ marginTop: 8, height: 138, display: "grid", placeItems: "center", overflow: "visible" }}><img src={imageSrc} alt={imageAlt || title} style={{ width: 230, maxWidth: "130%", height: 170, objectFit: "contain", display: "block", transform: "scale(1.18)", transformOrigin: "center", filter: "drop-shadow(0 18px 24px rgba(15,23,42,0.16))" }} /></div> : null}</Card>;
 }
 
 
@@ -1367,7 +1379,7 @@ function TodayInsightCard({ score, currentTone, situation, aiRisk, selectedRoute
   const toneBg = score >= 75 ? "#ecfdf5" : score >= 55 ? "#fffbeb" : "#fff1f2";
   const toneBorder = score >= 75 ? "#bbf7d0" : score >= 55 ? "#fde68a" : "#fecdd3";
   const toneFg = score >= 75 ? "#166534" : score >= 55 ? "#92400e" : "#be123c";
-  return <Card style={{ background: toneBg, borderColor: toneBorder }}><div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "start" }}><div><div style={{ color: toneFg, fontSize: 13, fontWeight: 950 }}>오늘의 한 줄 판단</div><h2 style={{ margin: "8px 0 10px", fontSize: 28, lineHeight: 1.25 }}>오늘은 <span style={{ color: toneFg }}>{currentTone.label}</span> 단계입니다.</h2><p style={{ margin: 0, color: "#334155", lineHeight: 1.75, fontWeight: 800 }}>{sentence}</p></div><div style={{ minWidth: 150, display: "grid", placeItems: "center", gap: 8 }}><MascotImage variant={mascotKey} size={190} /><div style={{ minWidth: 92, height: 70, borderRadius: 24, background: "rgba(255,255,255,0.78)", display: "grid", placeItems: "center", border: `1px solid ${toneBorder}` }}><div style={{ textAlign: "center" }}><div style={{ fontSize: 30, fontWeight: 950, color: toneFg }}>{score}</div><div style={{ fontSize: 12, color: "#64748b", fontWeight: 900 }}>/100</div></div></div></div></div><div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}><Badge tone={score >= 75 ? "green" : score >= 55 ? "yellow" : "red"}>{currentTone.label}</Badge><Badge tone="blue">{situation.label}</Badge><Badge tone="gray">{routeText}</Badge><Badge tone="gray">{protectionText}</Badge><Badge tone={aiRisk?.source?.startsWith("server-gemini") ? "green" : "yellow"}>{sourceLabel}</Badge></div>{aiRisk?.backendWarning ? <p style={{ margin: "14px 0 0", color: "#92400e", background: "rgba(255,255,255,0.62)", border: "1px solid #fde68a", borderRadius: 14, padding: 12, fontSize: 13, lineHeight: 1.6, fontWeight: 800 }}>AI 서버가 혼잡하여 공공데이터 기반 보조 분석을 사용했습니다. 서비스는 계속 정상 작동합니다.</p> : null}</Card>;
+  return <Card className="today-insight-card" style={{ background: toneBg, borderColor: toneBorder }}><div className="today-insight-layout" style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "start" }}><div><div style={{ color: toneFg, fontSize: 13, fontWeight: 950 }}>오늘의 한 줄 판단</div><h2 className="today-insight-title" style={{ margin: "8px 0 10px", fontSize: 28, lineHeight: 1.25 }}>오늘은 <span style={{ color: toneFg }}>{currentTone.label}</span> 단계입니다.</h2><p style={{ margin: 0, color: "#334155", lineHeight: 1.75, fontWeight: 800 }}>{sentence}</p></div><div className="today-insight-visual" style={{ minWidth: 150, display: "grid", placeItems: "center", gap: 8 }}><MascotImage variant={mascotKey} size={190} /><div style={{ minWidth: 92, height: 70, borderRadius: 24, background: "rgba(255,255,255,0.78)", display: "grid", placeItems: "center", border: `1px solid ${toneBorder}` }}><div style={{ textAlign: "center" }}><div style={{ fontSize: 30, fontWeight: 950, color: toneFg }}>{score}</div><div style={{ fontSize: 12, color: "#64748b", fontWeight: 900 }}>/100</div></div></div></div></div><div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}><Badge tone={score >= 75 ? "green" : score >= 55 ? "yellow" : "red"}>{currentTone.label}</Badge><Badge tone="blue">{situation.label}</Badge><Badge tone="gray">{routeText}</Badge><Badge tone="gray">{protectionText}</Badge><Badge tone={aiRisk?.source?.startsWith("server-gemini") ? "green" : "yellow"}>{sourceLabel}</Badge></div>{aiRisk?.backendWarning ? <p style={{ margin: "14px 0 0", color: "#92400e", background: "rgba(255,255,255,0.62)", border: "1px solid #fde68a", borderRadius: 14, padding: 12, fontSize: 13, lineHeight: 1.6, fontWeight: 800 }}>AI 서버가 혼잡하여 공공데이터 기반 보조 분석을 사용했습니다. 서비스는 계속 정상 작동합니다.</p> : null}</Card>;
 }
 
 function DataSourceReferencesCard() {
@@ -1758,6 +1770,7 @@ function AdminAuthPanel({ isAdmin, adminError, onLogin, onLogout }) {
         </div>
       )}
       {adminError ? <p style={{ color: "#be123c", fontWeight: 900 }}>{adminError}</p> : null}
+      
     </Card>
   );
 }
@@ -1817,7 +1830,7 @@ function DeveloperDebugPanel({ publicSafetyAnalysis, selectedProtectionAnalysis,
 
 function SafetyScorePanel({ score, currentTone, publicSafetyAnalysis, riskIndex }) {
   const aiAuxNote = "AI 위험 점수는 보조 감점으로만 반영하고, 주요 지표는 CSV·날씨·제보 실제 데이터 기반입니다.";
-  return <Card><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><div><div style={{ color: "#64748b", fontWeight: 950 }}>종합 안전 지수</div><div style={{ fontSize: 64, fontWeight: 950, letterSpacing: -3 }}>{score}<span style={{ fontSize: 24, color: "#94a3b8" }}>/100</span></div></div><span style={{ background: currentTone.bg, color: currentTone.fg, border: `1px solid ${currentTone.border}`, borderRadius: 999, padding: "7px 12px", fontWeight: 950 }}>{currentTone.label}</span></div><Bar label="보호구역 안전 인프라" value={publicSafetyAnalysis.protectionInfraScore} /><Bar label="보행 환경 안전성" value={publicSafetyAnalysis.walkingEnvScore} /><Bar label="조명·야간 안전성" value={publicSafetyAnalysis.lightingScore} /><Bar label="차량 속도 제어성" value={publicSafetyAnalysis.speedControlScore} /><Bar label="사고 위험도" value={publicSafetyAnalysis.accidentRisk} danger /><Bar label="종합 위험 지수" value={riskIndex} danger /><p style={{ margin: "12px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.6, fontWeight: 800 }}>{aiAuxNote}</p></Card>;
+  return <Card className="safety-score-card"><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><div><div style={{ color: "#64748b", fontWeight: 950 }}>종합 안전 지수</div><div className="score-hero-number" style={{ fontSize: 64, fontWeight: 950, letterSpacing: -3 }}>{score}<span style={{ fontSize: 24, color: "#94a3b8" }}>/100</span></div></div><span style={{ background: currentTone.bg, color: currentTone.fg, border: `1px solid ${currentTone.border}`, borderRadius: 999, padding: "7px 12px", fontWeight: 950 }}>{currentTone.label}</span></div><Bar label="보호구역 안전 인프라" value={publicSafetyAnalysis.protectionInfraScore} /><Bar label="보행 환경 안전성" value={publicSafetyAnalysis.walkingEnvScore} /><Bar label="조명·야간 안전성" value={publicSafetyAnalysis.lightingScore} /><Bar label="차량 속도 제어성" value={publicSafetyAnalysis.speedControlScore} /><Bar label="사고 위험도" value={publicSafetyAnalysis.accidentRisk} danger /><Bar label="종합 위험 지수" value={riskIndex} danger /><p style={{ margin: "12px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.6, fontWeight: 800 }}>{aiAuxNote}</p></Card>;
 }
 
 function AiRiskPanel({ aiRisk, aiError }) {
@@ -2564,7 +2577,7 @@ function App() {
 
   return <div style={styles.page}><style>{`*{box-sizing:border-box}button,select,input,textarea{font-family:inherit}button:hover{transform:translateY(-1px)}
 .collapsible-section details{width:100%}.collapsible-summary{cursor:pointer;font-weight:950;font-size:28px;color:#0f172a;list-style:none}.collapsible-summary::-webkit-details-marker{display:none}.collapsible-summary:after{content:'접기';float:right;font-size:13px;background:#eef2f7;color:#475569;border-radius:999px;padding:8px 12px;margin-top:2px}.collapsible-section details:not([open]) .collapsible-summary:after{content:'펼치기'}.collapsible-content{margin-top:22px}.dev-only{display:block}.mobile-only{display:none}.source-details{border:1px solid #e2e8f0;border-radius:18px;padding:16px;background:#f8fafc}.source-details summary{cursor:pointer;font-weight:950;color:#0f172a}.source-details div{margin-top:12px}.admin-card{border:1px solid #dbeafe!important;background:linear-gradient(180deg,#f8fbff,#ffffff)!important}.admin-form{display:flex;gap:10px;flex-wrap:wrap}.admin-form input{flex:1;min-width:180px}
-@media(max-width:640px){body{font-size:15px!important}.mobile-only{display:block}.desktop-only{display:none!important}.collapsible-section{padding:22px!important}.collapsible-summary{font-size:26px;line-height:1.25}.collapsible-content{margin-top:16px}.admin-form{display:grid;grid-template-columns:1fr}.admin-form input,.admin-form button{width:100%!important}.source-details{padding:14px}.source-details p{font-size:14px!important;line-height:1.6!important}h1{font-size:38px!important;line-height:1.15!important}h2{font-size:30px!important;line-height:1.2!important}h3{font-size:24px!important;line-height:1.25!important}p{line-height:1.65!important}.leaflet-container{min-height:360px!important}input,select,textarea,button{font-size:16px!important}.main-grid,.hero-grid,.two-grid{gap:16px!important}.card-mobile-tight{padding:20px!important}}
+@media(max-width:640px){body{font-size:14px!important}.mobile-only{display:block}.desktop-only{display:none!important}.collapsible-section{padding:18px!important;border-radius:22px!important}.collapsible-summary{font-size:22px;line-height:1.25}.collapsible-summary:after{font-size:11px;padding:6px 9px}.collapsible-content{margin-top:14px}.admin-form{display:grid;grid-template-columns:1fr}.admin-form input,.admin-form button{width:100%!important}.source-details{padding:12px}.source-details p{font-size:13px!important;line-height:1.55!important}h1{font-size:30px!important;line-height:1.14!important;letter-spacing:-1px!important}h2{font-size:24px!important;line-height:1.18!important;letter-spacing:-0.8px!important}h3{font-size:20px!important;line-height:1.22!important}p{font-size:14px!important;line-height:1.55!important}.leaflet-container{min-height:330px!important}input,select,textarea,button{font-size:15px!important}.main-grid,.hero-grid,.two-grid{gap:14px!important}.card-mobile-tight{padding:18px!important}.main-grid>div{gap:14px!important}.hero-grid{display:none!important}.today-insight-card{padding:18px!important}.today-insight-layout{display:grid!important;grid-template-columns:1fr!important;gap:10px!important}.today-insight-title{font-size:25px!important;line-height:1.2!important;word-break:keep-all!important}.today-insight-visual{min-width:0!important;display:flex!important;justify-content:space-between!important;align-items:center!important}.today-insight-visual img{width:118px!important;max-width:38vw!important}.today-insight-visual>div{width:74px!important;min-width:74px!important;height:58px!important;border-radius:18px!important}.score-hero-number{font-size:48px!important;letter-spacing:-2px!important}.score-hero-number span{font-size:18px!important}.stat-card{padding:18px!important;min-height:auto!important}.stat-value{font-size:28px!important;white-space:normal!important;word-break:keep-all!important;overflow-wrap:anywhere!important}.stat-card img{max-height:120px!important;transform:none!important}.safety-score-card{padding:18px!important}.safety-score-card .score-hero-number{font-size:52px!important}.safety-score-card [style*='font-size: 14px']{font-size:13px!important}.safety-score-card [style*='height: 11px']{height:9px!important}header>div{padding:10px 14px!important;gap:10px!important}header img{width:50px!important;height:50px!important}header button{padding:12px 14px!important;border-radius:18px!important;font-size:15px!important}header [style*='font-size: 22px']{font-size:20px!important}header [style*='font-size: 13px']{font-size:12px!important;line-height:1.25!important}main{padding:16px 14px 48px!important}section[style*='border-radius: 20px']{padding:6px!important;gap:6px!important}section[style*='border-radius: 20px'] button{padding:9px 11px!important;font-size:13px!important}.leaflet-control-container{font-size:12px!important}.card, .collapsible-section{max-width:100%!important}
 .dashboard-grid{align-items:stretch!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:14px!important}
 .dashboard-grid>div{min-height:190px!important;padding:22px 24px!important;overflow:hidden!important}
 .dashboard-grid>div h2,.dashboard-grid>div h3{margin-top:0!important}
