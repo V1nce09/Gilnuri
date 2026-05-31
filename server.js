@@ -13,6 +13,7 @@ const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 const naverClientId = process.env.NAVER_CLIENT_ID || "";
 const naverClientSecret = process.env.NAVER_CLIENT_SECRET || "";
 const neisApiKey = process.env.NEIS_API_KEY || "";
+const devPassword = process.env.DEV_PASSWORD || "";
 const analysisCache = new Map();
 const newsCache = new Map();
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -57,7 +58,18 @@ function setCache(key, value, store) {
   return value;
 }
 
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173" }));
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:4173",
+  process.env.FRONTEND_ORIGIN,
+].filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked origin: ${origin}`));
+  }
+}));
 app.use(express.json({ limit: "1mb" }));
 
 function clamp(value, min, max) {
@@ -814,6 +826,7 @@ app.get("/api/health", (_req, res) => {
     naverKeyConfigured: Boolean(naverClientId && naverClientSecret),
     newsRecentDays: NEWS_RECENT_DAYS,
     neisKeyConfigured: Boolean(neisApiKey),
+    devPasswordConfigured: Boolean(devPassword),
     cache: {
       analysis: analysisCache.size,
       news: newsCache.size,
@@ -822,6 +835,28 @@ app.get("/api/health", (_req, res) => {
       scheduleTtlMinutes: SCHEDULE_CACHE_TTL_MS / 60000
     }
   });
+});
+
+app.post("/api/dev-auth", (req, res) => {
+  const input = String(req.body?.password || "");
+
+  if (!devPassword) {
+    res.status(500).json({
+      ok: false,
+      message: "DEV_PASSWORD가 서버 환경변수에 설정되지 않았습니다.",
+    });
+    return;
+  }
+
+  if (input !== devPassword) {
+    res.status(401).json({
+      ok: false,
+      message: "관리자 비밀번호가 올바르지 않습니다.",
+    });
+    return;
+  }
+
+  res.json({ ok: true });
 });
 
 app.get("/api/debug/news", async (req, res) => {
@@ -1130,7 +1165,7 @@ function localChatAnswer(question, context = {}) {
 
   if (!q) return "질문을 입력해 주세요.";
   if (q.includes("점수") || q.includes("단계") || q.includes("위험") || q.includes("안전")) {
-    return `현재 ${schoolName}의 길누리 종합 안전 점수는 ${safetyScore ?? "분석 전"}점이고, 판정은 '${safetyTone.label}' 단계입니다. 이 점수는 위험 점수가 아니라 안전 점수라서 높을수록 안전하며, 0~59점은 위험, 60~79점은 주의, 80~100점은 안전으로 해석합니다.`;
+    return `현재 ${schoolName}의 길누리 종합 안전 점수는 ${safetyScore ?? "분석 전"}점이고, 판정은 '${safetyTone.label}' 단계입니다. 이 점수는 위험 점수가 아니라 안전 점수라서 높을수록 안전하며, 0~54점은 위험, 55~74점은 주의, 75~100점은 안전으로 해석합니다.`;
   }
   if (q.includes("마스크") || q.includes("미세먼지") || q.includes("공기")) {
     if (["나쁨", "매우 나쁨"].includes(airLabel)) return `현재 ${schoolName} 주변 대기질은 ${airLabel} 수준입니다. 등굣길에는 마스크를 착용하고, 오래 뛰거나 장시간 실외활동은 줄이는 것이 좋습니다.`;
@@ -1157,8 +1192,8 @@ function localChatAnswer(question, context = {}) {
 function safetyToneFromScore(score) {
   const value = Number(score);
   if (!Number.isFinite(value)) return { label: "분석 전", description: "아직 안전 점수가 계산되지 않았습니다." };
-  if (value >= 80) return { label: "안전", description: "전반적으로 안전한 편입니다." };
-  if (value >= 60) return { label: "주의", description: "일부 위험 요인이 있어 주의가 필요합니다." };
+  if (value >= 75) return { label: "안전", description: "전반적으로 안전한 편입니다." };
+  if (value >= 55) return { label: "주의", description: "일부 위험 요인이 있어 주의가 필요합니다." };
   return { label: "위험", description: "위험 요인이 비교적 크게 반영되어 각별한 주의가 필요합니다." };
 }
 
@@ -1174,11 +1209,11 @@ function sanitizeChatContext(context = {}) {
       name: "길누리 종합 안전 점수",
       direction: "높을수록 안전, 낮을수록 위험",
       ranges: [
-        { min: 80, max: 100, label: "안전" },
-        { min: 60, max: 79, label: "주의" },
-        { min: 0, max: 59, label: "위험" }
+        { min: 75, max: 100, label: "안전" },
+        { min: 55, max: 74, label: "주의" },
+        { min: 0, max: 54, label: "위험" }
       ],
-      warning: "앱의 0~100점 score는 위험 점수가 아니라 안전 점수다. 56점은 위험 단계다."
+      warning: "앱의 0~100점 score는 위험 점수가 아니라 안전 점수다. 55~74점은 주의 단계이고 54점 이하는 위험 단계다."
     },
     weather: context.weather || null,
     aiRisk: context.aiRisk || null,
@@ -1234,8 +1269,8 @@ app.post("/api/safety-chat", async (req, res) => {
 점수 체계는 반드시 지켜라.
 - context.score 또는 context.safetyScore는 0~100점의 '종합 안전 점수'다. 절대 '위험 점수'라고 부르지 마라.
 - 이 점수는 높을수록 안전하고 낮을수록 위험하다.
-- 80~100점은 '안전', 60~79점은 '주의', 0~59점은 '위험' 단계다.
-- 예를 들어 56점은 전반적으로 양호한 상태가 아니라 '위험 단계'다.
+- 75~100점은 '안전', 55~74점은 '주의', 0~54점은 '위험' 단계다.
+- 예를 들어 56점은 '주의 단계'이며, 54점 이하는 '위험 단계'다.
 - 날씨가 맑거나 대기질이 보통이어도, 앱 판정이 위험이면 위험 단계임을 먼저 인정하고 이유와 행동 수칙을 설명하라.
 - Gemini의 aiRisk.score는 0~45점 보조 위험 점수이며, 앱의 0~100점 종합 안전 점수와 혼동하지 마라.
 
