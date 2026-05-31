@@ -1758,7 +1758,6 @@ function AdminAuthPanel({ isAdmin, adminError, onLogin, onLogout }) {
         </div>
       )}
       {adminError ? <p style={{ color: "#be123c", fontWeight: 900 }}>{adminError}</p> : null}
-      <p style={{ color: "#94a3b8", fontSize: 12, marginBottom: 0 }}>비밀번호는 백엔드 Render 환경변수 DEV_PASSWORD로 설정합니다. 프론트엔드 환경변수에 넣으면 노출됩니다.</p>
     </Card>
   );
 }
