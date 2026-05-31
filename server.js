@@ -72,6 +72,69 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "1mb" }));
 
+const rateBuckets = new Map();
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.ip || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
+}
+
+function createRateLimiter({ name, windowMs, max }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${name}:${clientIp(req)}`;
+    const bucket = rateBuckets.get(key);
+
+    if (!bucket || bucket.resetAt <= now) {
+      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+
+    if (bucket.count >= max) {
+      res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
+      res.status(429).json({
+        ok: false,
+        error: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+      });
+      return;
+    }
+
+    bucket.count += 1;
+    next();
+  };
+}
+
+function requireDevPassword(req, res, next) {
+  const input = String(req.headers["x-dev-password"] || req.query.devPassword || "");
+
+  if (!devPassword) {
+    res.status(500).json({
+      ok: false,
+      message: "DEV_PASSWORD가 서버 환경변수에 설정되지 않았습니다.",
+    });
+    return;
+  }
+
+  if (input !== devPassword) {
+    res.status(401).json({
+      ok: false,
+      message: "관리자 인증이 필요한 API입니다.",
+    });
+    return;
+  }
+
+  next();
+}
+
+const aiLimiter = createRateLimiter({ name: "ai", windowMs: 60 * 1000, max: 20 });
+const authLimiter = createRateLimiter({ name: "dev-auth", windowMs: 10 * 60 * 1000, max: 10 });
+const debugLimiter = createRateLimiter({ name: "debug", windowMs: 60 * 1000, max: 20 });
+
+app.use("/api/safety-chat", aiLimiter);
+app.use("/api/safety-risk-analysis", aiLimiter);
+app.use("/api/dev-auth", authLimiter);
+app.use("/api/debug", debugLimiter);
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -859,7 +922,7 @@ app.post("/api/dev-auth", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/debug/news", async (req, res) => {
+app.get("/api/debug/news", requireDevPassword, async (req, res) => {
   const officeName = String(req.query.office || "서울특별시교육청");
   const schoolName = String(req.query.school || "서울가온초등학교");
   const payload = {
@@ -1121,7 +1184,7 @@ app.get("/api/geocode", async (req, res) => {
   }
 });
 
-app.get("/api/debug/schedule", async (req, res) => {
+app.get("/api/debug/schedule", requireDevPassword, async (req, res) => {
   const officeName = String(req.query.office || "서울특별시교육청");
   const schoolName = String(req.query.school || "남서울중학교");
   const schoolId = String(req.query.schoolId || "B000008405");
