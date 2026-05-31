@@ -14,6 +14,9 @@ const naverClientId = process.env.NAVER_CLIENT_ID || "";
 const naverClientSecret = process.env.NAVER_CLIENT_SECRET || "";
 const neisApiKey = process.env.NEIS_API_KEY || "";
 const devPassword = process.env.DEV_PASSWORD || "";
+const supabaseUrl = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+const reportsTable = process.env.SUPABASE_REPORTS_TABLE || "gilnuri_reports";
 const analysisCache = new Map();
 const newsCache = new Map();
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -129,11 +132,13 @@ function requireDevPassword(req, res, next) {
 const aiLimiter = createRateLimiter({ name: "ai", windowMs: 60 * 1000, max: 20 });
 const authLimiter = createRateLimiter({ name: "dev-auth", windowMs: 10 * 60 * 1000, max: 10 });
 const debugLimiter = createRateLimiter({ name: "debug", windowMs: 60 * 1000, max: 20 });
+const reportsLimiter = createRateLimiter({ name: "reports", windowMs: 60 * 1000, max: 40 });
 
 app.use("/api/safety-chat", aiLimiter);
 app.use("/api/safety-risk-analysis", aiLimiter);
 app.use("/api/dev-auth", authLimiter);
 app.use("/api/debug", debugLimiter);
+app.use("/api/reports", reportsLimiter);
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -161,6 +166,82 @@ function airGrade(pm25, pm10) {
   if (p25 > 35 || p10 > 80) return { label: "나쁨", score: 70 };
   if (p25 > 15 || p10 > 30) return { label: "보통", score: 40 };
   return { label: "좋음", score: 10 };
+}
+
+function supabaseConfigured() {
+  return Boolean(supabaseUrl && supabaseKey);
+}
+
+function supabaseHeaders(extra = {}) {
+  return {
+    apikey: supabaseKey,
+    Authorization: `Bearer ${supabaseKey}`,
+    "Content-Type": "application/json",
+    Prefer: "return=representation",
+    ...extra,
+  };
+}
+
+async function supabaseRequest(path, options = {}) {
+  if (!supabaseConfigured()) throw new Error("SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY가 설정되지 않았습니다.");
+  const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
+    ...options,
+    headers: supabaseHeaders(options.headers || {}),
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const message = data?.message || data?.error || `Supabase HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+function cleanReportPayload(body = {}) {
+  const lat = num(body.lat, NaN);
+  const lon = num(body.lon, NaN);
+  const schoolLat = num(body.schoolLat, NaN);
+  const schoolLon = num(body.schoolLon, NaN);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < 33 || lat > 39 || lon < 124 || lon > 132) {
+    throw new Error("유효한 한국 좌표의 제보 위치가 필요합니다.");
+  }
+  const report = {
+    school_id: safeString(body.schoolId, 80),
+    school_name: safeString(body.schoolName, 120),
+    office_code: safeString(body.officeCode, 40),
+    office_name: safeString(body.officeName, 120),
+    lat,
+    lon,
+    type: safeString(body.type || "위험 제보", 80),
+    severity: safeString(body.severity || "보통", 30),
+    memo: safeString(body.memo, 500),
+    location_label: safeString(body.locationLabel || "제보 위치", 160),
+    source: "gilnuri-web",
+  };
+  if (Number.isFinite(schoolLat) && Number.isFinite(schoolLon)) {
+    report.school_lat = schoolLat;
+    report.school_lon = schoolLon;
+  }
+  if (!report.school_id && !report.school_name) throw new Error("제보를 연결할 학교 정보가 필요합니다.");
+  return report;
+}
+
+function normalizeReport(row = {}) {
+  return {
+    id: row.id,
+    schoolId: row.school_id || "",
+    schoolName: row.school_name || "",
+    officeCode: row.office_code || "",
+    officeName: row.office_name || "",
+    lat: num(row.lat, 0),
+    lon: num(row.lon, 0),
+    type: row.type || "위험 제보",
+    severity: row.severity || "보통",
+    memo: row.memo || "",
+    locationLabel: row.location_label || "제보 위치",
+    source: row.source || "shared",
+    createdAt: row.created_at || "",
+  };
 }
 
 function compactPayload(body) {
@@ -890,6 +971,8 @@ app.get("/api/health", (_req, res) => {
     newsRecentDays: NEWS_RECENT_DAYS,
     neisKeyConfigured: Boolean(neisApiKey),
     devPasswordConfigured: Boolean(devPassword),
+    supabaseConfigured: supabaseConfigured(),
+    reportsTable,
     cache: {
       analysis: analysisCache.size,
       news: newsCache.size,
@@ -920,6 +1003,63 @@ app.post("/api/dev-auth", (req, res) => {
   }
 
   res.json({ ok: true });
+});
+
+app.get("/api/reports", async (req, res) => {
+  try {
+    const schoolId = safeString(req.query.schoolId, 80);
+    const schoolName = safeString(req.query.schoolName, 120);
+    const officeCode = safeString(req.query.officeCode, 40);
+    const limit = clamp(num(req.query.limit, 100), 1, 300);
+    const sinceDays = clamp(num(req.query.sinceDays, 30), 1, 365);
+    const sinceIso = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
+
+    const params = new URLSearchParams();
+    params.set("select", "*");
+    params.set("created_at", `gte.${sinceIso}`);
+    params.set("order", "created_at.desc");
+    params.set("limit", String(limit));
+    if (schoolId) params.set("school_id", `eq.${schoolId}`);
+    else if (schoolName) params.set("school_name", `eq.${schoolName}`);
+    if (officeCode) params.set("office_code", `eq.${officeCode}`);
+
+    const rows = await supabaseRequest(`${reportsTable}?${params.toString()}`, { method: "GET", headers: { Prefer: "" } });
+    res.json({ ok: true, source: "supabase", count: Array.isArray(rows) ? rows.length : 0, reports: Array.isArray(rows) ? rows.map(normalizeReport) : [] });
+  } catch (error) {
+    console.error("Shared reports fetch failed:", error?.message || error);
+    res.status(500).json({ ok: false, error: error?.message || "공유 제보 조회 실패", reports: [] });
+  }
+});
+
+app.post("/api/reports", async (req, res) => {
+  try {
+    const report = cleanReportPayload(req.body || {});
+    const rows = await supabaseRequest(reportsTable, {
+      method: "POST",
+      body: JSON.stringify(report),
+    });
+    const saved = Array.isArray(rows) ? rows[0] : rows;
+    res.status(201).json({ ok: true, source: "supabase", report: normalizeReport(saved) });
+  } catch (error) {
+    console.error("Shared report save failed:", error?.message || error);
+    res.status(400).json({ ok: false, error: error?.message || "공유 제보 저장 실패" });
+  }
+});
+
+app.delete("/api/reports/:id", requireDevPassword, async (req, res) => {
+  try {
+    const id = safeString(req.params.id, 80);
+    if (!id) throw new Error("삭제할 제보 ID가 필요합니다.");
+    const params = new URLSearchParams();
+    params.set("id", `eq.${id}`);
+    const rows = await supabaseRequest(`${reportsTable}?${params.toString()}`, {
+      method: "DELETE",
+    });
+    res.json({ ok: true, source: "supabase", deleted: Array.isArray(rows) ? rows.length : 0 });
+  } catch (error) {
+    console.error("Shared report delete failed:", error?.message || error);
+    res.status(400).json({ ok: false, error: error?.message || "공유 제보 삭제 실패" });
+  }
 });
 
 app.get("/api/debug/news", requireDevPassword, async (req, res) => {
